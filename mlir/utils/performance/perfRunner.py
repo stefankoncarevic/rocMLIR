@@ -144,17 +144,24 @@ def getNanoSeconds(fileName):
 # conflicts. Value range: 0% (optimal) to 100% (bad).
 def getBankConflict(fileName):
     if not os.path.exists(fileName):
+        print("Not exist")
         result = "NaN"
+        print("Result", result)
         return result
     with open(fileName, 'r') as csv_file:
         reader = csv.DictReader(csv_file, delimiter = ',')
         header = reader.fieldnames
+        print("Header:", header)
         if 'LDSBankConflict' not in header:
             return np.nan
 
         result = []
-        for row in reader:
-            result.append(float(row['LDSBankConflict']))
+        for row in reader:  
+            try:  
+                print("Row:", row)
+                result.append(float(row['LDSBankConflict']))  
+            except ValueError:  
+                print(f"Invalid value for 'LDSBankConflict': {row['LDSBankConflict']}") 
         csv_file.close()
         result_average = sum(result) / len(result)
         return result_average
