@@ -16,7 +16,7 @@ def loadMlirData(filename: str):
                        'MIOpen TFlops (Untuned MLIR Kernels)', 'Tuned/Untuned', 'Tuned/MIOpen',
                        'rocBLAS TFlops (no MLIR Kernels)', 'MLIR/rocBLAS', 'Tuned/rocBLAS', 'Quick Tuned/rocBLAS',
                        'Quick Tuned/MIOpen', 'Quick Tuned/Untuned', 'Quick Tuned/Tuned', 'LDSBankConflict (MIOpen)',
-                       'LDSBankConflict (rocBLAS)']
+                       'LDSBankConflict (rocBLAS)', 'LDSBankConflict (CK) ']
     df.drop(columns=COLUMNS_DROPPED, inplace=True, errors='ignore')
     # Work around empty PerfConfig field whin migrating from no tuning to yes tuning
     # Can be removed next time we touch this
