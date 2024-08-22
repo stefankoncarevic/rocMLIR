@@ -46,13 +46,18 @@ def get_agents(rocm_path):
         p = subprocess.run([rocm_path + "/bin/rocm_agent_enumerator", "-name"],
                            check=True, stdout=subprocess.PIPE)
         agents = set(x.decode("utf-8") for x in p.stdout.split())
-        if not agents:
+        if not agents or not all(agent.startswith("gfx") for agent in agents):
             # TODO: Remove this workaround for a bug in rocm_agent_enumerator -name
             # Once https://github.com/RadeonOpenCompute/rocminfo/pull/59 lands
             q = subprocess.run([rocm_path + "/bin/rocm_agent_enumerator"],
                                check=True, stdout=subprocess.PIPE)
             agents = set(x.decode("utf-8") for x in q.stdout.split())
-        return set(a for a in agents if a != "gfx000")
+        # Debug print to check agents  
+        print(f"Agents before filtering: {agents}")  
+        filtered_agents = set(a for a in agents if a != "gfx000")
+        # Debug print to check filtered agents  
+        print(f"Filtered agents: {filtered_agents}")  
+        return filtered_agents
     else:
         p = subprocess.run([rocm_path + "/bin/amdgpu_arch.exe"],
                            check=True, stdout=subprocess.PIPE, shell=True)
