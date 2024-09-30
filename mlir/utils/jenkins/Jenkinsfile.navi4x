@@ -45,40 +45,22 @@ void check_RockE2EPRTests_Navi4x() {
         -DROCMLIR_DRIVER_E2E_TEST_ENABLED=0
         -DROCK_E2E_TEST_ENABLED=0
         -DROCMLIR_DRIVER_TEST_GPU_VALIDATION=1
-        -DLLVM_LIT_ARGS='-v --time-tests -j 1'
+        -DLLVM_LIT_ARGS='-v --time-tests'
     """)
     echo "Static Test step skipped"
     }
 
-void checkRocmlirOnNavi4x(String testSuite) {  
-    sh '[ ! -d build ] || rm -rf build'  
-    buildProject('check-rocmlir', """  
-             -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0  
-             -DROCMLIR_DRIVER_E2E_TEST_ENABLED=0  
-             -DROCK_E2E_TEST_ENABLED=1  
-             -DROCK_E2E_TEST_SUITES=${testSuite}  
-             -DROCMLIR_DRIVER_RANDOM_DATA_SEED='none'  
-             -DROCMLIR_DRIVER_TEST_GPU_VALIDATION=1  
-             -DLLVM_LIT_ARGS='-v --time-tests -j 1'   
-     """)  
-}  
-
-void runE2ETests_Navi4x() {  
-    // Run all E2E tests in multiple smaller batches to increase the chance of successful completion  
-    sh '[ ! -d build ] || rm -rf build'  
-    buildProject('check-mlir-build-only check-rocmlir', """  
-         -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0  
-         -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1  
-         -DROCK_E2E_TEST_ENABLED=1  
-         -DROCK_E2E_TEST_SUITES='part1'  
-         -DROCMLIR_DRIVER_RANDOM_DATA_SEED='none'  
-         -DROCMLIR_DRIVER_TEST_GPU_VALIDATION=1  
-         -DLLVM_LIT_ARGS='-v --time-tests -j 1'  
-    """)  
-    checkRocmlirOnNavi4x('part2')  
-    checkRocmlirOnNavi4x('part3')  
-    checkRocmlirOnNavi4x('part4')  
-    checkRocmlirOnNavi4x('part5')  
+void runE2ETests_Navi4x() {
+    // Run all E2E tests in multiple smaller batches to increase the chance of successful completion
+    sh '[ ! -d build ] || rm -rf build'
+    buildProject('check-rocmlir', """
+         -DROCMLIR_DRIVER_PR_E2E_TEST_ENABLED=0
+         -DROCMLIR_DRIVER_E2E_TEST_ENABLED=1
+         -DROCK_E2E_TEST_ENABLED=1
+         -DROCMLIR_DRIVER_RANDOM_DATA_SEED='none'
+         -DROCMLIR_DRIVER_TEST_GPU_VALIDATION=1
+         -DLLVM_LIT_ARGS='-v --time-tests'
+    """)
 }
 
 pipeline {
