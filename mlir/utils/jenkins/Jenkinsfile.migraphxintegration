@@ -2,7 +2,7 @@ boolean shouldRunOnMachine(String machine){
     switch (machine){
         case "ixt-hq-ubb4-31":
             return (params.MI250 == true)
-        case "sh5-1e707-rf06-26.mkm.dcgpu":
+        case "sh5-1w300-h1-4.amd.com":
             return (params.MI300 == true)
         case "supermicro-829":
             return (params.Navi2x == true)
@@ -125,7 +125,7 @@ def testModels(modelsToTest, outLogFile, summary, datatypes) {
             def command = "\$(pwd)/AMDMIGraphX/build/bin/migraphx-driver ${checkFor} ${testcase} ${datatype}"
             def commandOutputFile = "command_output.txt"
             def commandWithTee = "${command} | tee ${commandOutputFile}"
-            def timeoutStatus = sh(script: "timeout 1h ${commandWithTee}", returnStatus: true)
+            def timeoutStatus = sh(script: "timeout 2h ${commandWithTee}", returnStatus: true)
             def output = readFile commandOutputFile
 
             sh(script: "sed -n '/Summary:/,\$p; /FAILED:/,\$p' ${commandOutputFile} | tee -a ${outLogFile}")
@@ -197,8 +197,8 @@ def list_tier1_p0_default='''\
 /models/ORT/onnx_models/distilgpt2_1_fp16_gpu.onnx --fill1 input_ids --input-dim @input_ids 1 384 --batch 1
 /models/ORT/onnx_models/distilgpt2_1_fp16_gpu.onnx --fill1 input_ids --input-dim @input_ids 32 384 --batch 32
 /models/ORT/onnx_models/distilgpt2_1_fp16_gpu.onnx --fill1 input_ids --input-dim @input_ids 64 384 --batch 64
-/models/onnx-model-zoo/gpt2-10.onnx
 /models/resnet50_v1.onnx
+/models/onnx-model-zoo/gpt2-10.onnx
 '''
 
 def list_tier1_p1_default= '''\
@@ -236,7 +236,7 @@ pipeline {
                 axes {
                     axis {
                         name 'PLATFORM'
-                        values "ixt-hq-ubb4-31", "sh5-1e707-rf06-26.mkm.dcgpu", "supermicro-829", "aus-navi3x-19.amd.com", "navi4x-hw-31.amd.com"
+                        values "ixt-hq-ubb4-31", "sh5-1w300-h1-4.amd.com", "supermicro-829", "aus-navi3x-19.amd.com", "navi4x-hw-31.amd.com"
                     }
                 }
                 when {
@@ -261,7 +261,7 @@ pipeline {
                 axes {
                     axis {
                         name 'PLATFORM'
-                        values "ixt-hq-ubb4-31", "sh5-1e707-rf06-26.mkm.dcgpu", "supermicro-829", "aus-navi3x-19.amd.com", "navi4x-hw-31.amd.com"
+                        values "ixt-hq-ubb4-31", "sh5-1w300-h1-4.amd.com", "supermicro-829", "aus-navi3x-19.amd.com", "navi4x-hw-31.amd.com"
                     }
                 }
                 agent {
