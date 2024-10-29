@@ -458,6 +458,38 @@ def AMDGPU_DPPOp : AMDGPU_Op<"dpp", [SameTypeOperands, AllTypesMatch<["result", 
   let hasVerifier = 1;
 }
 
+def AMDGPU_StrictWWMOp : AMDGPU_Op<"amdgcn_strict_wwm", [SameTypeOperands, AllTypesMatch<["result", "src"]>]> {
+  let summary = "AMDGPU Strict Write-Within-Mask (WWM) operation";
+  let description = [{
+    This operation performs a strict write-within-mask (WWM) operation, ensuring
+    that only active threads (i.e., those specified by the mask) perform writes.
+    The result is committed only for the active threads within a wavefront.
+  }];
+  let arguments = (ins AnyType:$src);
+  let results = (outs AnyType:$result);
+
+  let assemblyFormat = [{
+    $src attr-dict `:` type($result)
+  }];
+  //let hasVerifier = 1;
+}
+
+def AMDGPU_SetInactiveOp : AMDGPU_Op<"amdgcn_set_inactive", [SameTypeOperands, AllTypesMatch<["result", "src", "inactive_value"]>]> {  
+  let summary = "AMDGPU Set Inactive operation";  
+  let description = [{  
+    This operation copies the value from the first argument, while setting 
+    all inactive lanes to the value specified by the second argument.
+    Inactive lanes are determined based on the current execution mask.
+  }];  
+  let arguments = (ins AnyType:$src, AnyType:$inactive_value);  
+  let results = (outs AnyType:$result);  
+  
+  let assemblyFormat = [{  
+    $src `,` $inactive_value attr-dict `:` type($result)  
+  }];  
+  //let hasVerifier = 1;
+}
+
 def AMDGPU_LDSBarrierOp : AMDGPU_Op<"lds_barrier"> {
   let summary = "Barrier that includes a wait for LDS memory operations.";
   let description = [{

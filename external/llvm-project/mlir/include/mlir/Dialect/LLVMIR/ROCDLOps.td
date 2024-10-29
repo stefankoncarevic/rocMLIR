@@ -805,4 +805,42 @@ def ROCDL_TargetAttr :
     }
   }];
 }
+
+// Whole Wavefront Mode intrinsic
+def ROCDL_StrictWWMOp : ROCDL_IntrOp<"strict.wwm", [], [0],
+    [AllTypesMatch<["res", "src"]>], 1>,
+  Arguments<(ins LLVM_Type:$src)> {
+  let results = (outs LLVM_Type:$res);
+  let assemblyFormat = [{
+    attr-dict $src `:` type($src)
+  }];
+  string llvmBuilder = [{
+      auto vdataType = moduleTranslation.convertType(op.getSrc().getType());
+      llvm::Value *args[] = {
+        moduleTranslation.lookupValue(op.getSrc())
+      };
+      $res = createIntrinsicCall(builder,
+        llvm::Intrinsic::amdgcn_strict_wwm, args, {vdataType});
+  }];
+}
+
+// Set Inactive intrinsic
+def ROCDL_SetInactiveOp : ROCDL_IntrOp<"set.inactive", [], [0, 1],
+    [AllTypesMatch<["res", "src", "inactive_value"]>], 1>,
+  Arguments<(ins LLVM_Type:$src, LLVM_Type:$inactive_value)> {
+  let results = (outs LLVM_Type:$res);
+  let assemblyFormat = [{
+    attr-dict $src `,` $inactive_value `:` type($src)
+  }];
+  string llvmBuilder = [{
+      auto llvmType = moduleTranslation.convertType(op.getSrc().getType());
+      llvm::Value *args[] = {
+        moduleTranslation.lookupValue(op.getSrc()),
+        moduleTranslation.lookupValue(op.getInactiveValue())
+      };
+      $res = createIntrinsicCall(builder,
+        llvm::Intrinsic::amdgcn_set_inactive, args, {llvmType});
+  }];
+}
+
 #endif // ROCDLIR_OPS

@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt -rock-blockwise-gemm-to-threadwise -canonicalize -split-input-file %s | FileCheck %s
+// RUN: rocmlir-opt -rock-blockwise-gemm-to-threadwise  -convert-gpu-to-rocdl -canonicalize -split-input-file %s | FileCheck %s
 
 // CHECK-DAG: #[[MAP:.*]] =  affine_map<(d0) -> (d0, 0)>
 // CHECK-DAG: #[[MAP1:.*]] = affine_map<(d0, d1) -> (d0, d1)>

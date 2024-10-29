@@ -1046,6 +1046,48 @@ struct AMDGPUDPPLowering : public ConvertOpToLLVMPattern<DPPOp> {
   }
 };
 
+struct AMDGPUStrictWWM : public ConvertOpToLLVMPattern<StrictWWMOp> {
+  AMDGPUStrictWWM(LLVMTypeConverter &converter, Chipset chipset)
+      : ConvertOpToLLVMPattern<StrictWWMOp>(converter), chipset(chipset) {}
+  Chipset chipset;
+
+  LogicalResult
+  matchAndRewrite(StrictWWMOp StrictWWMOp, StrictWWMOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    Location loc = StrictWWMOp.getLoc();
+    Value src = adaptor.getSrc();
+    Type llvmType = src.getType();
+
+    auto StrictWwmOp = rewriter.create<ROCDL::StrictWWMOp>(loc, llvmType, src);
+
+    rewriter.replaceOp(StrictWWMOp, ValueRange(StrictWwmOp));
+    return success();
+  }
+};
+
+struct AMDGPUSetInactive : public ConvertOpToLLVMPattern<SetInactiveOp> {
+  AMDGPUSetInactive(LLVMTypeConverter &converter, Chipset chipset)
+      : ConvertOpToLLVMPattern<SetInactiveOp>(converter), chipset(chipset) {}
+  Chipset chipset;
+
+  LogicalResult
+  matchAndRewrite(SetInactiveOp op, SetInactiveOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    Location loc = op.getLoc();
+    Value src = adaptor.getSrc();
+    Value inactiveValue = adaptor.getInactiveValue();
+    Type llvmType = src.getType();
+
+    auto setInactiveOp = rewriter.create<ROCDL::SetInactiveOp>(
+        loc, llvmType, src, inactiveValue);
+
+    rewriter.replaceOp(setInactiveOp, ValueRange(setInactiveOp));
+    return success();
+  }
+};
+
 struct ConvertAMDGPUToROCDLPass
     : public impl::ConvertAMDGPUToROCDLBase<ConvertAMDGPUToROCDLPass> {
   ConvertAMDGPUToROCDLPass() = default;
@@ -1088,10 +1130,10 @@ void mlir::populateAMDGPUToROCDLConversionPatterns(LLVMTypeConverter &converter,
                                ROCDL::RawPtrBufferAtomicUminOp>,
            RawBufferOpLowering<RawBufferAtomicCmpswapOp,
                                ROCDL::RawPtrBufferAtomicCmpSwap>,
-           AMDGPUDPPLowering, LDSBarrierOpLowering, SchedBarrierOpLowering,
-           MFMAOpLowering, WMMAOpLowering, ExtPackedFp8OpLowering,
-           PackedTrunc2xFp8OpLowering, PackedStochRoundFp8OpLowering>(converter,
-                                                                      chipset);
+           AMDGPUDPPLowering, AMDGPUStrictWWM, AMDGPUSetInactive,
+           LDSBarrierOpLowering, SchedBarrierOpLowering, MFMAOpLowering,
+           WMMAOpLowering, ExtPackedFp8OpLowering, PackedTrunc2xFp8OpLowering,
+           PackedStochRoundFp8OpLowering>(converter, chipset);
 }
 
 std::unique_ptr<Pass> mlir::createConvertAMDGPUToROCDLPass() {

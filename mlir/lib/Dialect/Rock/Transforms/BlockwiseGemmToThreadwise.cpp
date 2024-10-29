@@ -42,7 +42,7 @@
 #include "mlir/Dialect/Rock/IR/AccelEmitter.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
-
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 namespace mlir {
 namespace rock {
 #define GEN_PASS_DEF_ROCKBLOCKWISEGEMMTOTHREADWISEPASS
@@ -560,9 +560,29 @@ struct BlockwiseReduceRewritePattern
     TransformMapAttr lowestTr =
         cast<TransformMapAttr>(regTensorView[regTensorView.size() - 1]);
     ArrayRef<int64_t> lowestShape = lowestTr.getLowerBounds().asArrayRef();
+    // Kreiranje format stringa za ispis
+    // auto formatStr = rewriter.getStringAttr("lowestShape: [%lld, %lld]\n");
+    // Pripremite tipove rezultata
+    /*mlir::Type i64Type = rewriter.getI64Type();
+    // Kreiranje konstantnih vrednosti
+    auto const0 = rewriter.create<mlir::arith::ConstantOp>(
+        loc, i64Type, rewriter.getI64IntegerAttr(lowestShape[0]));
+    auto const1 = rewriter.create<mlir::arith::ConstantOp>(
+        loc, i64Type, rewriter.getI64IntegerAttr(lowestShape[1]));
+    // Poziv create za PrintfOp
+    rewriter.create<mlir::gpu::PrintfOp>(loc, formatStr,
+                                         ValueRange{const0, const1});*/
     TopDownTMBuilder tensorToLDSViewBuilder(rewriter, lowestShape, loc);
     SmallVector<StringRef, 4> upperNameRefs;
     tensorToLDSViewBuilder.getStartNames(upperNameRefs);
+
+    /*std::string joinedNames = llvm::join(upperNameRefs, ", "); //ne radi ne
+    moze da se na ispravna nacin pretvori string ref u value
+    rewriter.create<mlir::gpu::PrintfOp>(
+        loc,
+        rewriter.getStringAttr("Gornje reference imena: [%s]\n"),
+        ValueRange{joinedNames}
+    );*/
 
     SmallVector<StringRef, 4> nonReduceNameRefs;
     SmallVector<unsigned, 4> nonReduceDims;
@@ -582,6 +602,7 @@ struct BlockwiseReduceRewritePattern
       tensorToLDSViewBuilder.passThrough({"rDim"}, {1},
                                          {upperNameRefs[reduceAxis]});
     }
+
     TransformMapAttr twoDimLDSView = tensorToLDSViewBuilder.get();
     return prependUpperViews(rewriter, regTensorView,
                              rewriter.getArrayAttr({twoDimLDSView}));
@@ -707,6 +728,9 @@ struct BlockwiseReduceRewritePattern
   ArrayAttr createThreadViewforNRSmallerThanThreads(
       Location loc, ArrayRef<int64_t> toReduceShape, int64_t blockSize,
       size_t reduceAxis, PatternRewriter &rewriter) const {
+    // rewriter.create<gpu::PrintfOp>(loc, "Initial blockSize: %ld\n",
+    // ValueRange{rewriter.create<mlir::arith::ConstantIntOp>(loc, blockSize,
+    // 64)});
     BottomUpTMBuilder threadsToTensor(rewriter, toReduceShape, loc);
     SmallVector<StringRef, 4> lowerNameRefs;
     threadsToTensor.getStartNames(lowerNameRefs);
@@ -718,6 +742,11 @@ struct BlockwiseReduceRewritePattern
         nonReduceNameRefs.push_back(lowerNameRefs[dim]);
       }
     }
+
+    /*rewriter.create<gpu::PrintfOp>(
+        loc, "Non-reduce merge dim size: %ld\n",
+        ValueRange{rewriter.create<arith::ConstantIndexOp>(
+            loc, nonReduceMergeDimSize)});*/
     threadsToTensor.merge("nrDim", 0, nonReduceNameRefs);
     threadsToTensor.passThrough({"rDim"}, {1}, {lowerNameRefs[reduceAxis]});
     TransformMapAttr mergeTrMap = threadsToTensor.get();
@@ -727,8 +756,15 @@ struct BlockwiseReduceRewritePattern
     // than the product of non reduction dimensions. Therefore, we create thread
     // groups (rthreads) per a point in merge(non reduction dimensions).
     int64_t rthreads = blockSize / nonReduceMergeDimSize;
+    /*rewriter.create<gpu::PrintfOp>(
+        loc, "RThreads: %ld\n",
+        ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, rthreads)});*/
     int64_t rDimPerRThread =
         (toReduceShape[reduceAxis] + (rthreads - 1)) / rthreads;
+    /*rewriter.create<gpu::PrintfOp>(
+        loc, "rDimPerRThread: %ld\n",
+        ValueRange{
+            rewriter.create<arith::ConstantIndexOp>(loc, rDimPerRThread)});*/
     threadsToTensor.pad(
         {"rDim"}, {0, rthreads * rDimPerRThread - toReduceShape[reduceAxis]});
     threadsToTensor.passThrough({"nrDim"}, {0}, {"nrDim"});
@@ -772,6 +808,22 @@ struct BlockwiseReduceRewritePattern
     }
   }
 
+  void printInput(Value input, OpBuilder &builder, Location loc) const {
+    // Format string za ispis
+    auto formatString = builder.getStringAttr("Input value: %f\n");
+
+    // Proverite tip inputa
+    Value inputToPrint = input;
+    /*if (isa<mlir::TensorType>(input.getType())) {
+        // Uzmite prvi element ako je tensor
+        inputToPrint = builder.create<mlir::arith::ExtractElementOp>(loc, input,
+    builder.getI64ArrayAttr({0}));
+    }*/
+
+    // Kreirajte gpu.printf
+    builder.create<mlir::gpu::PrintfOp>(loc, formatString, inputToPrint);
+  }
+
   Value createReducingOp(BlockwiseBroadcastReduceOp op, Value input, Value acc,
                          OpBuilder &builder) const {
     ReduceMethod rMethod = op.getReduceMethod();
@@ -779,6 +831,9 @@ struct BlockwiseReduceRewritePattern
     // Value loadAcc = rewriter.create<InBoundsLoadOp>(loc, input.getType(),
     // acc, zeroConstantOp);
     Type elementType = op.getInput().getType().getElementType();
+
+    // Debug: Ispiši vrednost input
+    // printInput(input, builder, loc);
 
     if (!isa<VectorType>(acc.getType()) && isa<VectorType>(input.getType())) {
       // This means accumulator is a scalar type and input is a vector type,
@@ -839,15 +894,29 @@ struct BlockwiseReduceRewritePattern
   // view and store the reduced data to reduced buffer
   void doThreadwiseReductions(PatternRewriter &rewriter, Location loc,
                               BlockwiseBroadcastReduceOp op,
-                              Value reducedBuffer,
+                              Value reducedBuffer, int64_t blockSize,
                               ArrayAttr inputThreadSubTile2dView) const {
     Value inputRawBuffer = op.getInput();
+    // auto srcBufferType = cast<MemRefType>(inputRawBuffer.getType());
+    // llvm::errs() << "Izlaz: " <<
+    // cast<gpu::AddressSpaceAttr>(srcBufferType.getMemorySpace()).getValue() <<
+    // "\n"; llvm::errs() << "Tip" << reducedBuffer.getType() << "\n";
+    WorkitemIdOp tid =
+        rewriter.create<WorkitemIdOp>(loc, rewriter.getIndexType());
+    WorkgroupIdOp blockId =
+        rewriter.create<WorkgroupIdOp>(loc, rewriter.getIndexType());
     int64_t numElements =
         cast<MemRefType>(inputRawBuffer.getType()).getNumElements();
+    /*rewriter.create<mlir::gpu::PrintfOp>(
+        loc,
+        rewriter.getStringAttr(
+            "Threadwise reduction: Number of elements: %d\n"),
+        ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, numElements)});*/
     constexpr size_t nrDim = 0;
 
     Type elemType = cast<MemRefType>(inputRawBuffer.getType()).getElementType();
     Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
     auto loop = rewriter.create<TransformingForOp>(
         loc, ArrayRef<ValueRange>{{zero}, {zero}},
         ArrayRef<Attribute>{inputThreadSubTile2dView,
@@ -860,11 +929,141 @@ struct BlockwiseReduceRewritePattern
       rewriter.setInsertionPointToStart(loop.getBody());
       Block::BlockArgListType upperCoords = loop.getLowerCoords(1);
       Block::BlockArgListType subtileCoords = loop.getLowerCoords(0);
+
       Value ldInput = rewriter.create<InBoundsLoadOp>(
           loc, elemType, inputRawBuffer, upperCoords);
+      /*rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr("ThreadwiseReduction: block: %d "
+                                 "tid: %d ldInput: %f\n"),
+          ValueRange{blockId, tid, ldInput});*/
       Value ldInputAcc = rewriter.create<InBoundsLoadOp>(
           loc, elemType, reducedBuffer, subtileCoords[nrDim]);
+
+      // Poziv ROCDL_SetInactiveOp
+      /*Value setInactiveValue = rewriter.create<ROCDL::SetInactiveOp>(
+          loc, elemType, ldInput, ldInputAcc);
+      // Dodaj printf za provere
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr("ThreadwiseReduction: block: %d tid: %d "
+                                 "ldInput: %f SetInactiveValue: %f\n"),
+          ValueRange{blockId, tid, ldInput, setInactiveValue});
+
+      Value dppResult1 = rewriter.create<ROCDL::DPPUpdateOp>(
+          loc, elemType, setInactiveValue, setInactiveValue, 0x110 + 1, 0xF,
+          0xF, false);
+
+      Value dppResult = createReducingOp(op, setInactiveValue, dppResult1,
+      rewriter); rewriter.create<mlir::gpu::PrintfOp>( loc,
+          rewriter.getStringAttr(
+              "ThreadwiseReduction: block: %d tid: %d dppResult "
+              "after DPP1111111111111: %f\n"),
+          ValueRange{blockId, tid, dppResult});
+
+      Value dppResult2 = rewriter.create<ROCDL::DPPUpdateOp>(
+          loc, elemType, setInactiveValue, setInactiveValue, 0x110 + 2, 0xF,
+      0xF, false);
+
+      dppResult = createReducingOp(op, dppResult, dppResult2, rewriter);
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr(
+              "ThreadwiseReduction: block: %d tid: %d dppResult "
+              "after DPP2222222222: %f\n"),
+          ValueRange{blockId, tid, dppResult});
+
+      Value dppResult3 = rewriter.create<ROCDL::DPPUpdateOp>(
+            loc, elemType, setInactiveValue, setInactiveValue, 0x110 + 3, 0xF,
+            0xF, false);
+
+        dppResult = createReducingOp(op, dppResult, dppResult3, rewriter);
+        rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr(
+                "storePartialReductionstoLDS: block: %d tid: %d dppResult "
+                "after DPP333333333: %f\n"),
+            ValueRange{blockId, tid, dppResult});
+
+      Value dppResult4 = rewriter.create<ROCDL::DPPUpdateOp>(
+          loc, elemType, dppResult, dppResult, 0x110 + 4, 0xF, 0xE, false);
+
+      dppResult = createReducingOp(op, dppResult, dppResult4, rewriter);
+
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr(
+              "ThreadwiseReduction: block: %d tid: %d dppResult "
+              "after DPP444444444444444: %f\n"),
+          ValueRange{blockId, tid, dppResult});
+
+      Value dppResult5 = rewriter.create<ROCDL::DPPUpdateOp>(
+          loc, elemType, dppResult, dppResult, 0x110 + 8, 0xF, 0xC, false);
+
+      dppResult = createReducingOp(op, dppResult, dppResult5, rewriter);
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr(
+              "ThreadwiseReduction: block: %d tid: %d dppResult "
+              "after DPP88888888888888: %f\n"),
+          ValueRange{blockId, tid, dppResult});
+
+      Value dppBrodcast = rewriter.create<ROCDL::DPPUpdateOp>(
+          loc, elemType, dppResult, dppResult, 0x142, 0xA, 0xF, false);
+
+      dppResult = createReducingOp(op, dppResult, dppBrodcast, rewriter);
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr("ThreadwiseReduction: block: %d "
+                                 "tid: %d dppResult after DPPbcast15: %f\n"),
+          ValueRange{blockId, tid, dppResult});
+
+      dppBrodcast = rewriter.create<ROCDL::DPPUpdateOp>(
+          loc, elemType, dppResult, dppResult, 0x143, 0xC, 0xF, false);
+
+      dppResult = createReducingOp(op, dppResult, dppBrodcast, rewriter);
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr("ThreadwiseReduction: block: %d "
+                                 "tid: %d dppResult after DPPbcast31: %f\n"),
+          ValueRange{blockId, tid, dppResult});
+
+      Value dppRotated = rewriter.create<ROCDL::DPPUpdateOp>(
+          loc, elemType, dppResult, dppResult, 0x13C, 0xF, 0xF, false);
+
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr("ThreadwiseReduction: block: %d "
+                                 "tid: %d dppResult after DPProtate: %f\n"),
+          ValueRange{blockId, tid, dppRotated});
+
+      dppRotated =
+          rewriter.create<ROCDL::StrictWWMOp>(loc, elemType, dppRotated);
+
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr("ThreadwiseReduction: block: %d "
+                                 "tid: %d dppResult after WWM: %f\n"),
+          ValueRange{blockId, tid, dppRotated});*/
+
+      /*wwmresult = rewriter.create<ROCDL::StrictWQMOp>(
+     loc, elemType, dppRotated);
+
+     rewriter.create<mlir::gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr("ThreadwiseReduction: block: %d "
+                                 "tid: %d dppResult after WWM: %f\n"),
+          ValueRange{blockId, tid, wwmresult});
+
+      rewriter.create<InBoundsStoreOp>(loc, wwmresult, reducedBuffer,
+                                       subtileCoords[nrDim]);*/
+
       Value reduced = createReducingOp(op, ldInput, ldInputAcc, rewriter);
+      /*rewriter.create<gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr(
+              "Threadwise reduction: tid: %d Reduced Value: %f\n"),
+          ValueRange{tid, reduced});*/
       rewriter.create<InBoundsStoreOp>(loc, reduced, reducedBuffer,
                                        subtileCoords[nrDim]);
     }
@@ -872,12 +1071,11 @@ struct BlockwiseReduceRewritePattern
 
   // This function store partial reductions to LDS for
   // inter-thread reductions later on.
-  void storePartialReductionstoLDS(PatternRewriter &rewriter, Location loc,
-                                   Value reducedBuffer, Value ldsBuffer,
-                                   ArrayAttr inputBlockSubTile2dView,
-                                   ArrayAttr inputThreadSubTile2dView,
-                                   ArrayAttr tidSubTileSliceView,
-                                   ArrayAttr toFlatLDSView) const {
+  void storePartialReductionstoLDS(
+      BlockwiseBroadcastReduceOp op, PatternRewriter &rewriter, Location loc,
+      Value reducedBuffer, Value ldsBuffer, ArrayAttr inputBlockSubTile2dView,
+      ArrayAttr inputThreadSubTile2dView, ArrayAttr tidSubTileSliceView,
+      ArrayAttr toFlatLDSView, int64_t blockSize) const {
     Type elemType = cast<MemRefType>(reducedBuffer.getType()).getElementType();
     constexpr size_t nrDim = 0;
     constexpr size_t rDim = 1;
@@ -887,6 +1085,8 @@ struct BlockwiseReduceRewritePattern
         getLowerShape(inputThreadSubTile2dView);
     WorkitemIdOp tid =
         rewriter.create<WorkitemIdOp>(loc, rewriter.getIndexType());
+    WorkgroupIdOp blockId =
+        rewriter.create<WorkgroupIdOp>(loc, rewriter.getIndexType());
     Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
 
     // First we iterate thread subtile along non-reduction
@@ -916,13 +1116,151 @@ struct BlockwiseReduceRewritePattern
       {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(convertToBlockSubTile.getBody());
-        Value blockNrDimCoord = convertToBlockSubTile.getLowerCoords(0)[nrDim];
+        Value blockNrDimCoord = convertToBlockSubTile.getLowerCoords(
+            0)[nrDim]; // blockNrDimCoord: 0.000000
         Value ldReduced = rewriter.create<InBoundsLoadOp>(
             loc, elemType, reducedBuffer, ValueRange{threadSubTile2DCoords[0]});
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr("storePartialReductionstoLDS: block: %d "
+                                   "tid: %d ldReduced: %f\n"),
+            ValueRange{blockId, tid, ldReduced});*/
+        // Value laneId = tid.getResult(); // Lane ID (0-63)
 
-        // Here we plug the tid to get the sliced block subtile coordinate find
-        // a unique packed coordinate in the reduction axis per each thread to
-        // write the partial reductions to the lds.
+        Value inactiveValue = rewriter.create<arith::ConstantOp>(
+            loc, elemType, rewriter.getFloatAttr(elemType, 0.0));
+
+        Value setInactiveValue = rewriter.create<ROCDL::SetInactiveOp>(
+            loc, elemType, ldReduced, inactiveValue);
+        // Dodaj printf za provere
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr("ThreadwiseReduction: block: %d tid: %d "
+                                   "ldInput: %f SetInactiveValue: %f\n"),
+            ValueRange{blockId, tid, ldReduced, setInactiveValue});*/
+
+        Value dppResult1 = rewriter.create<amdgpu::DPPOp>(
+            loc, elemType, setInactiveValue, setInactiveValue,
+            amdgpu::DPPPermAttr::get(rewriter.getContext(),
+                                     amdgpu::DPPPerm::row_shr),
+            rewriter.getI32IntegerAttr(1), rewriter.getI32IntegerAttr(0xF),
+            rewriter.getI32IntegerAttr(0xF), rewriter.getBoolAttr(false));
+
+        Value dppResult =
+            createReducingOp(op, setInactiveValue, dppResult1, rewriter);
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr(
+                "storePartialReductionstoLDS: block: %d tid: %d dppResult "
+                "after DPP1111111111111: %f\n"),
+            ValueRange{blockId, tid, dppResult});*/
+
+        Value dppResult2 = rewriter.create<amdgpu::DPPOp>(
+            loc, elemType, setInactiveValue, setInactiveValue, amdgpu::DPPPermAttr::get(rewriter.getContext(),
+                                     amdgpu::DPPPerm::row_shr),
+            rewriter.getI32IntegerAttr(2), rewriter.getI32IntegerAttr(0xF),
+            rewriter.getI32IntegerAttr(0xF), rewriter.getBoolAttr(false));
+
+        dppResult = createReducingOp(op, dppResult, dppResult2, rewriter);
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr(
+                "storePartialReductionstoLDS: block: %d tid: %d dppResult "
+                "after DPP2222222222: %f\n"),
+            ValueRange{blockId, tid, dppResult});*/
+
+        Value dppResult3 = rewriter.create<amdgpu::DPPOp>(
+            loc, elemType, setInactiveValue, setInactiveValue, amdgpu::DPPPermAttr::get(rewriter.getContext(),
+                                     amdgpu::DPPPerm::row_shr),
+            rewriter.getI32IntegerAttr(3), rewriter.getI32IntegerAttr(0xF),
+            rewriter.getI32IntegerAttr(0xF), rewriter.getBoolAttr(false));
+
+        dppResult = createReducingOp(op, dppResult, dppResult3, rewriter);
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr(
+                "storePartialReductionstoLDS: block: %d tid: %d dppResult "
+                "after DPP333333333: %f\n"),
+            ValueRange{blockId, tid, dppResult});*/
+
+        Value dppResult4 = rewriter.create<amdgpu::DPPOp>(
+            loc, elemType, dppResult, dppResult, amdgpu::DPPPermAttr::get(rewriter.getContext(),
+                                     amdgpu::DPPPerm::row_shr),
+            rewriter.getI32IntegerAttr(4), rewriter.getI32IntegerAttr(0xF),
+            rewriter.getI32IntegerAttr(0xE), rewriter.getBoolAttr(false));
+
+        dppResult = createReducingOp(op, dppResult, dppResult4, rewriter);
+
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr(
+                "storePartialReductionstoLDS: block: %d tid: %d dppResult "
+                "after DPP444444444444444: %f\n"),
+            ValueRange{blockId, tid, dppResult});*/
+        Value dppResult5 = rewriter.create<amdgpu::DPPOp>(
+            loc, elemType, dppResult, dppResult, amdgpu::DPPPermAttr::get(rewriter.getContext(),
+                                     amdgpu::DPPPerm::row_shr),
+            rewriter.getI32IntegerAttr(8), rewriter.getI32IntegerAttr(0xF),
+            rewriter.getI32IntegerAttr(0xC), rewriter.getBoolAttr(false));
+
+        dppResult = createReducingOp(op, dppResult, dppResult5, rewriter);
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr(
+                "storePartialReductionstoLDS: block: %d tid: %d dppResult "
+                "after DPP88888888888888: %f\n"),
+            ValueRange{blockId, tid, dppResult});*/
+
+        Value dppBrodcast = rewriter.create<amdgpu::DPPOp>(
+            loc, elemType, dppResult, dppResult, amdgpu::DPPPermAttr::get(rewriter.getContext(),
+                                     amdgpu::DPPPerm::row_bcast_15),
+            nullptr, rewriter.getI32IntegerAttr(0xA),
+            rewriter.getI32IntegerAttr(0xF), rewriter.getBoolAttr(false));
+
+        dppResult = createReducingOp(op, dppResult, dppBrodcast, rewriter);
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr("storePartialReductionstoLDS: block: %d "
+                                   "tid: %d dppResult after DPPbcast15: %f\n"),
+            ValueRange{blockId, tid, dppResult});*/
+
+        dppBrodcast = rewriter.create<amdgpu::DPPOp>(
+            loc, elemType, dppResult, dppResult, amdgpu::DPPPermAttr::get(rewriter.getContext(),
+                                     amdgpu::DPPPerm::row_bcast_31),
+             nullptr, rewriter.getI32IntegerAttr(0xC),
+            rewriter.getI32IntegerAttr(0xF), rewriter.getBoolAttr(false));
+
+        dppResult = createReducingOp(op, dppResult, dppBrodcast, rewriter);
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr("storePartialReductionstoLDS: block: %d "
+                                   "tid: %d dppResult after DPPbcast31: %f\n"),
+            ValueRange{blockId, tid, dppResult});*/
+
+        Value dppRotated = rewriter.create<amdgpu::DPPOp>(
+            loc, elemType, dppResult, dppResult, amdgpu::DPPPermAttr::get(rewriter.getContext(),
+                                     amdgpu::DPPPerm::wave_ror),
+            nullptr, rewriter.getI32IntegerAttr(0xF),
+            rewriter.getI32IntegerAttr(0xF), rewriter.getBoolAttr(false));
+
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr("storePartialReductionstoLDS: block: %d "
+                                   "tid: %d dppResult after DPProtate: %f\n"),
+            ValueRange{blockId, tid, dppRotated});*/
+
+        dppRotated =
+            rewriter.create<ROCDL::StrictWWMOp>(loc, elemType, dppRotated);
+
+        /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr("ThreadwiseReduction: block: %d "
+                                   "tid: %d dppResult after WWM: %f\n"),
+            ValueRange{blockId, tid, dppRotated});*/
+
+        // Here we plug the tid to get the sliced block subtile coordinate
+        // find a unique packed coordinate in the reduction axis per each
+        // thread to write the partial reductions to the lds.
         auto convertToBlockSubTileTidSlice = rewriter.create<TransformingForOp>(
             loc, ArrayRef<ValueRange>{{tid}},
             ArrayRef<Attribute>{tidSubTileSliceView},
@@ -947,7 +1285,13 @@ struct BlockwiseReduceRewritePattern
             rewriter.setInsertionPointToStart(ldsStoreloop.getBody());
             Block::BlockArgListType ldsFlatCoords =
                 ldsStoreloop.getLowerCoords(0);
-            rewriter.create<InBoundsStoreOp>(loc, ldReduced, ldsBuffer,
+            Value flatCoordX = ldsFlatCoords[0];
+            //Value flatCoordY = ldsFlatCoords[1];
+            /*rewriter.create<mlir::gpu::PrintfOp>(
+            loc,
+            rewriter.getStringAttr("InboundsStoreOp: block: %d, tid: %d, ldsFlatCoordX: %d, value: %f\n"),  
+                ValueRange{blockId, tid, flatCoordX, dppRotated}); */
+            rewriter.create<InBoundsStoreOp>(loc, dppRotated, ldsBuffer,
                                              ldsFlatCoords);
           }
         }
@@ -960,29 +1304,69 @@ struct BlockwiseReduceRewritePattern
                   BlockwiseBroadcastReduceOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
-    // inputView should be register {bid, tid, iter} to virtual tensor {bid, d0,
+    // inputView should be register {bid, tid, iter} to virtual tensor {bid,
+    // d0,
     // ... , Dr , ... , dn} coords transforms where Dr is the reduction axis.
     ArrayAttr inputViewArrayAttr = op.getInputRegViewAttr();
+
     TypedValue<MemRefType> inputReg = op.getInput();
+    /*rewriter.create<mlir::gpu::PrintfOp>(
+        loc, rewriter.getStringAttr("inputReg: %p\n"),
+       ValueRange{inputReg});*/
     TypedValue<MemRefType> outputReg = op.getOutput();
+    /*rewriter.create<mlir::gpu::PrintfOp>(
+        loc, rewriter.getStringAttr("Output: %p\n"), ValueRange{outputReg});*/
     Type elemType = inputReg.getType().getElementType();
     TypedValue<MemRefType> workspaceLDSBuffer = op.getWorkspaceBuffer();
+    /*rewriter.create<mlir::gpu::PrintfOp>(
+        loc, rewriter.getStringAttr("workspaceLDSBuffer: %p\n"),
+        ValueRange{workspaceLDSBuffer});*/
     Value zeroConstantOp = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    int64_t axis = op.getAxis().getSExtValue();
+    int64_t axis = op.getAxis().getSExtValue(); // 1
+    /*rewriter.create<mlir::gpu::PrintfOp>(
+        loc, rewriter.getStringAttr("axis: %d\n"),
+        ValueRange{rewriter.create<mlir::arith::ConstantIntOp>(loc, axis,
+       64)});*/
     int64_t blockSize = op.getBlockSize();
+    /*rewriter.create<mlir::gpu::PrintfOp>(
+        loc, rewriter.getStringAttr("blockSize: %d\n"),
+        ValueRange{
+            rewriter.create<mlir::arith::ConstantIntOp>(loc, blockSize, 64)});*/
     auto privateMemoryAddressSpace = rewriter.getAttr<gpu::AddressSpaceAttr>(
         gpu::GPUDialect::getPrivateAddressSpace());
+    // Dobijamo celobrojnu vrednost adresnog prostora
+    /*int64_t addressSpaceValue =
+        static_cast<int64_t>(privateMemoryAddressSpace.getValue());
+    auto addressSpaceConstantOp = rewriter.create<mlir::arith::ConstantIntOp>(
+        loc, addressSpaceValue, rewriter.getIntegerType(64));
+    rewriter.create<mlir::gpu::PrintfOp>(
+        loc, rewriter.getStringAttr("privateMemoryAddressSpace: %d\n"),
+        ValueRange{addressSpaceConstantOp});*/
     // Get current workitem ID.
     WorkitemIdOp tid =
         rewriter.create<WorkitemIdOp>(loc, rewriter.getIndexType());
+    /*rewriter.create<mlir::gpu::PrintfOp>(
+        loc, rewriter.getStringAttr("tid: %d\n"), ValueRange{tid});*/
+    WorkgroupIdOp blockId =
+        rewriter.create<WorkgroupIdOp>(loc, rewriter.getIndexType());
 
     // Create strides and bounds to iterate the virtual tensor
     TransformMapAttr lowerTr = cast<TransformMapAttr>(
         inputViewArrayAttr[inputViewArrayAttr.size() - 1]);
-    ArrayRef<int64_t> lowerTrLowerBounds =
+    ArrayRef<int64_t> lowerTrLowerBounds = // tr_map bounds [4,20] 0=4, 1=20
         lowerTr.getLowerBounds().asArrayRef();
     SmallVector<int64_t, 4> regTensorShape =
-        llvm::to_vector<4>(lowerTrLowerBounds);
+        llvm::to_vector<4>(lowerTrLowerBounds); // isto kao i prethodni iste
+                                                // vrednosti jer se kopiraju
+
+    /*for (size_t i = 0; i < lowerTrLowerBounds.size(); ++i) {
+      Value idxValue = rewriter.create<arith::ConstantIndexOp>(loc, i);
+      Value lowerBoundValue =
+          rewriter.create<arith::ConstantIndexOp>(loc, lowerTrLowerBounds[i]);
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc, rewriter.getStringAttr("lowerTrLowerBounds[%d] = %d\n"),
+          ValueRange{idxValue, lowerBoundValue});
+    }*/
 
     // 2DView is alwasy nrDim x rdim
     constexpr size_t nrDim = 0;
@@ -991,14 +1375,48 @@ struct BlockwiseReduceRewritePattern
         createInput2DView(loc, rewriter, op.getIterSubTileSliceView(), axis);
     ArrayRef<int64_t> inputThreadSubTile2dShape =
         getLowerShape(inputThreadSubTile2dView);
+
+    /*for (size_t i = 0; i < inputThreadSubTile2dShape.size();
+         ++i) { // prvo je 4 iz lowest dhape drugo je 1
+      Value idxValue = rewriter.create<arith::ConstantIndexOp>(loc, i);
+      Value lowerBoundValue = rewriter.create<arith::ConstantIndexOp>(
+          loc, inputThreadSubTile2dShape[i]);
+      rewriter.create<mlir::gpu::PrintfOp>(
+          loc, rewriter.getStringAttr("inputThreadSubTile2dShape[%d] = %d\n"),
+          ValueRange{idxValue, lowerBoundValue});
+    }
+    Value idxValue = rewriter.create<arith::ConstantIndexOp>(loc,
+inputThreadSubTile2dShape[0]); Value lowerBoundValue =
+rewriter.create<arith::ConstantIndexOp>(loc, inputThreadSubTile2dShape[1]);
+    rewriter.create<gpu::PrintfOp>(
+    loc,
+    rewriter.getStringAttr("Thread SubTile 2D Shape: [%d,
+%d]\n"),ValueRange{idxValue,lowerBoundValue});*/ //isto prikazuje sto i gore
+    /*auto wavefrontSize = 64;
+    // Kreiranje tipa za buffer sa veličinom za ceo wavefront
+    auto partialReductionBufferType1 =
+        MemRefType::get({wavefrontSize}, elemType, AffineMap{},
+    privateMemoryAddressSpace);
+        // Alokacija buffera u privatnom adresnom prostoru
+    Value partialReductionBuffer1 =
+        rewriter.create<GpuAllocOp>(loc, partialReductionBufferType1);
+        // Dobijanje inicijalne vrednosti redukcije
+    //Value initVal1 = getReductionInitValue(op, rewriter);
+    Value inactiveValue = rewriter.create<arith::ConstantOp>(
+              loc, elemType, rewriter.getFloatAttr(elemType, 0.0));
+    // Inicijalizacija buffera
+    rewriter.create<FillOp>(loc, partialReductionBuffer1, inactiveValue);*/
     auto partialReductionBufferType =
         MemRefType::get(inputThreadSubTile2dShape[nrDim], elemType, AffineMap{},
                         privateMemoryAddressSpace);
-    Value partialReductionBuffer =
+    Value partialReductionBuffer = // alocira buffer za vrednosti redukcije
         rewriter.create<GpuAllocOp>(loc, partialReductionBufferType);
     Value initVal = getReductionInitValue(op, rewriter);
-    rewriter.create<FillOp>(loc, partialReductionBuffer, initVal);
-    doThreadwiseReductions(rewriter, loc, op, partialReductionBuffer,
+    rewriter.create<FillOp>(
+        loc, partialReductionBuffer,
+        initVal); // ubacuje inicijalne vrednosti iz initvalue funkcije
+
+    doThreadwiseReductions(rewriter, loc, op, partialReductionBuffer, blockSize,
                            inputThreadSubTile2dView);
 
     // Create partially reduced tensor shape
@@ -1006,125 +1424,136 @@ struct BlockwiseReduceRewritePattern
         createInput2DView(loc, rewriter, inputViewArrayAttr, axis);
     SmallVector<int64_t, 2> partialRegTensorShape =
         llvm::to_vector<2>(getLowerShape(inputBlockSubTile2dView));
-    ArrayAttr tidSubTileSliceView =
-        createInput2DView(loc, rewriter, op.getTidSubTileSliceView(), axis);
+    /*rewriter.create<gpu::PrintfOp>(
+        loc,
+        rewriter.getStringAttr(
+            "Partial Reduction Tensor Shape: [%lld, %lld]\n"),
+        ArrayRef<Value>{rewriter.create<arith::ConstantIndexOp>(
+                            loc, partialRegTensorShape[0]),
+                        rewriter.create<arith::ConstantIndexOp>(
+                            loc, partialRegTensorShape[1])});*/
+    ArrayAttr tidSubTileSliceView = createInput2DView(
+        loc, rewriter, op.getTidSubTileSliceView(),
+        axis); // vezanoj za thread ID (tid) koji se koristi za identifikaciju
+               // specifičnih niti tokom izvršavanja.
     ArrayRef<int64_t> partialReductionuctionLower2DShape =
         getLowerShape(tidSubTileSliceView);
+    /*for (size_t i = 0; i < partialReductionuctionLower2DShape.size(); ++i) {
+      rewriter.create<gpu::PrintfOp>(
+          loc,
+          rewriter.getStringAttr("Value at tidSubTileSliceView[%lld]:
+    %lld\n"), ArrayRef<Value>{rewriter.create<arith::ConstantIndexOp>(loc, i),
+                          rewriter.create<arith::ConstantIndexOp>(
+                              loc, partialReductionuctionLower2DShape[i])});
+    }*/
     partialRegTensorShape[rDim] = partialReductionuctionLower2DShape[rDim];
     ArrayAttr toFlatLDSView =
         create2DToFlatLDSView(loc, rewriter, partialRegTensorShape[nrDim],
                               partialRegTensorShape[rDim]);
-    storePartialReductionstoLDS(rewriter, loc, partialReductionBuffer,
+    /*rewriter.create<gpu::PrintfOp>(
+        loc,
+        rewriter.getStringAttr(
+            "Creating flat LDS view with dimensions: [%lld, %lld]\n"),
+        ValueRange{rewriter.create<arith::ConstantIndexOp>(
+                       loc, partialRegTensorShape[nrDim]),
+                   rewriter.create<arith::ConstantIndexOp>(
+                       loc, partialRegTensorShape[rDim])});*/
+
+    storePartialReductionstoLDS(op, rewriter, loc, partialReductionBuffer,
                                 workspaceLDSBuffer, inputBlockSubTile2dView,
                                 inputThreadSubTile2dView, tidSubTileSliceView,
-                                toFlatLDSView);
+                                toFlatLDSView, blockSize);
 
     rewriter.create<LDSBarrierOp>(loc);
+
     // Following RAII scope will create reduction loops.
     {
       int64_t nonReductionDimSizeProduct = partialRegTensorShape[nrDim];
-      if (blockSize <= nonReductionDimSizeProduct) {
-        // This means there aren't enough threads to do a parallel reduction
-        // each individual thread could do its own reduction.
-        ArrayAttr threadsToTensorTrs = createThreadViewForNRLargerThanThreads(
-            loc, partialRegTensorShape, blockSize, rDim, rewriter);
-        ArrayAttr threadToLDSViewTrs =
-            createLDSWorkspaceView(loc, rewriter, threadsToTensorTrs, rDim);
-        ArrayAttr threadsToLDSViewReducedTrs = createLDSWorkspaceView(
-            loc, rewriter, threadsToTensorTrs, rDim, /*makeRDimZero-*/ true);
-        ArrayRef<int64_t> threadViewShape =
-            cast<TransformMapAttr>(threadToLDSViewTrs[0]).getUpperBounds();
-        constexpr size_t nrIterDim = 1;
-        constexpr size_t rIterDim = 2;
+      /*Value nonReductionDimSizeProductValue =
+          rewriter.create<arith::ConstantIntOp>(loc, nonReductionDimSizeProduct,
+                                                64);
+      rewriter.create<gpu::PrintfOp>(
+          loc, rewriter.getStringAttr("nonReductionDimSizeProduct = %d\n"),
+          ValueRange{nonReductionDimSizeProductValue});*/
 
-        // Note: This currently creates a bunch of dead IR because vectorization
-        // needs access to a `Value` in order to account for scalarized buffers.
-        Value threadToLDSViewed =
-            transform(rewriter, workspaceLDSBuffer, threadToLDSViewTrs);
-        VectorizationResult nrIterVectorRes =
-            getMaxVectorization(threadToLDSViewed, nrIterDim);
-        int64_t nrIterVectorLen = nrIterVectorRes.max;
-        // Create the accumulation register
-        // This will be accumulated over non-reduction iterations.
-        auto accRegType = MemRefType::get(
-            nrIterVectorLen, elemType, AffineMap{}, privateMemoryAddressSpace);
-        Value accReg = rewriter.create<GpuAllocOp>(loc, accRegType);
+      if (blockSize <= nonReductionDimSizeProduct) {
+      // llvm::errs() << "Usao sam!!" << "\n";
+      //  This means there aren't enough threads to do a parallel reduction
+      //  each individual thread could do its own reduction.
+      ArrayAttr threadsToTensorTrs = createThreadViewForNRLargerThanThreads(
+          loc, partialRegTensorShape, blockSize, rDim, rewriter);
+      ArrayAttr threadToLDSViewTrs =
+          createLDSWorkspaceView(loc, rewriter, threadsToTensorTrs, rDim);
+      ArrayAttr threadsToLDSViewReducedTrs = createLDSWorkspaceView(
+          loc, rewriter, threadsToTensorTrs, rDim, /*makeRDimZero-*/ true);
+      ArrayRef<int64_t> threadViewShape =
+          cast<TransformMapAttr>(threadToLDSViewTrs[0]).getUpperBounds();
+
+      constexpr size_t nrIterDim = 1;
+      constexpr size_t rIterDim = 2;
+
+      // Note: This currently creates a bunch of dead IR because
+      // vectorization needs access to a `Value` in order to account for
+      // scalarized buffers.
+      Value threadToLDSViewed =
+          transform(rewriter, workspaceLDSBuffer, threadToLDSViewTrs);
+      {
+        // Glavna logika redukcije na 256 vrednosti
+        SmallVector<Value, 4> inits{tid, zeroConstantOp, zeroConstantOp};
+        SmallVector<int64_t> bounds{1, 1, threadViewShape[rIterDim]};
+        SmallVector<int64_t> strides{1, 1, 1}; // Ako je redukcija već urađena
+
+        TransformingForOp reductionLoop = rewriter.create<TransformingForOp>(
+            loc, ArrayRef<ValueRange>{inits, inits, inits},
+            ArrayRef<Attribute>{threadToLDSViewTrs, rewriter.getArrayAttr({}),
+                                threadsToLDSViewReducedTrs},
+            ArrayRef<int64_t>(bounds), ArrayRef<int64_t>(strides),
+            /*forceUnroll=*/true,
+            /*useIndexDiffs=*/true);
         {
           PatternRewriter::InsertionGuard guard(rewriter);
-          Value nrIter;
-          if (threadViewShape[nrIterDim] > 1) {
-            AffineForOp nrIterLoop = rewriter.create<AffineForOp>(
-                loc, 0, threadViewShape[nrIterDim], nrIterVectorLen);
-            // inside the loop.
-            rewriter.setInsertionPointToStart(nrIterLoop.getBody());
-            nrIter = nrIterLoop.getInductionVar();
-          } else {
-            nrIter = zeroConstantOp;
-          }
-          rewriter.create<FillOp>(loc, accReg, initVal);
-          VectorizationResult rIterVectorRes =
-              getMaxVectorization(threadToLDSViewed, rIterDim);
-          int64_t rIterVectorLen = rIterVectorRes.max;
-          SmallVector<Value, 4> inits{tid, nrIter, zeroConstantOp};
-          SmallVector<int64_t> bounds{1, 1, threadViewShape[rIterDim]};
-          SmallVector<int64_t> strides{1, 1, rIterVectorLen};
+          rewriter.setInsertionPointToStart(reductionLoop.getBody());
+          Block::BlockArgListType LDSLoadCoords =
+              reductionLoop.getLowerCoords(/*domain=*/0);
+          // There are two vectorization scenarios :
+          // 1) rIterVectorLen > 1 &&  nrIterVectorLen == 1
+          //    Here we will have a load vector and accReg that is a scalar
+          //    The code in createReducingOp will vector reduce it before
+          //    doing a reducing store to accReg
+          // 2) nrIterVectorLen > 1 && rIterVectorLen == 1
+          //    Here we will have a load vector and accReg that is also a
+          //    vector The code in createReducingOp will do vector
+          //    elementwise op and store the resulting vector to accReg.
+          // NOTE: currently, LDS is viewed as [nrDim x rDim] therefore
+          // only scenario 1) is exercised. However, we'd like to keep
+          // this code compatible with both approaches for future changes.
+          Value loadVal = rewriter.create<InBoundsLoadOp>(
+              loc, elemType, workspaceLDSBuffer, LDSLoadCoords);
+            /*rewriter.create<gpu::PrintfOp>(
+                loc, rewriter.getStringAttr("block: %d "
+                                   "tid: %d Loaded value: %f\n"),
+                ArrayRef<Value>{blockId, tid, loadVal});*/
+          Value rIterArg = reductionLoop.getLowerCoords(/*domain=*/1)[rIterDim];
+          /*rewriter.create<gpu::PrintfOp>(
+              loc, rewriter.getStringAttr("Current reduction iteration: %d\n"),
+              ArrayRef<Value>{rIterArg});*/
 
-          TransformingForOp reductionLoop = rewriter.create<TransformingForOp>(
-              loc, ArrayRef<ValueRange>{inits, inits, inits},
-              ArrayRef<Attribute>{threadToLDSViewTrs, rewriter.getArrayAttr({}),
-                                  threadsToLDSViewReducedTrs},
-              ArrayRef<int64_t>(bounds), ArrayRef<int64_t>(strides),
-              /*forceUnroll=*/true,
-              /*useIndexDiffs=*/true);
+          Value isTidZero = rewriter.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::eq, tid,
+              rewriter.create<arith::ConstantIndexOp>(loc, 0));
+          scf::IfOp ifb = rewriter.create<scf::IfOp>(loc, isTidZero,
+                                                     /*withElseRegion=*/false);
           {
-            PatternRewriter::InsertionGuard guard(rewriter);
-            rewriter.setInsertionPointToStart(reductionLoop.getBody());
-            Block::BlockArgListType LDSLoadCoords =
-                reductionLoop.getLowerCoords(/*domain=*/0);
-            // There are two vectorization scenarios :
-            // 1) rIterVectorLen > 1 &&  nrIterVectorLen == 1
-            //    Here we will have a load vector and accReg that is a scalar
-            //    The code in createReducingOp will vector reduce it before
-            //    doing a reducing store to accReg
-            // 2) nrIterVectorLen > 1 && rIterVectorLen == 1
-            //    Here we will have a load vector and accReg that is also a
-            //    vector The code in createReducingOp will do vector elementwise
-            //    op and store the resulting vector to accReg.
-            // NOTE: currently, LDS is viewed as [nrDim x rDim] therefore
-            // only scenario 1) is exercised. However, we'd like to keep
-            // this code compatible with both approaches for future changes.
-            Value loadVal = rewriter.create<InBoundsLoadOp>(
-                loc,
-                vectorTypeOrSelf(elemType,
-                                 std::max(rIterVectorLen, nrIterVectorLen)),
-                workspaceLDSBuffer, LDSLoadCoords);
-            Value loadAcc = rewriter.create<InBoundsLoadOp>(
-                loc, vectorTypeOrSelf(elemType, nrIterVectorLen), accReg,
-                zeroConstantOp);
-            Value reduced = createReducingOp(op, loadVal, loadAcc, rewriter);
-            rewriter.create<InBoundsStoreOp>(loc, reduced, accReg,
-                                             zeroConstantOp);
-            // Storing the last reduction iter output directly to LDS[..., dr=0,
-            // ...]
-            Value rIterArg =
-                reductionLoop.getLowerCoords(/*domain=*/1)[rIterDim];
-            Value boundVal = rewriter.create<arith::ConstantIndexOp>(
-                loc, threadViewShape[rIterDim]);
-            Value strideVal =
-                rewriter.create<arith::ConstantIndexOp>(loc, rIterVectorLen);
-            Value lastIterVal =
-                rewriter.create<arith::SubIOp>(loc, boundVal, strideVal);
-            Value isLastIter = rewriter.create<arith::CmpIOp>(
-                loc, arith::CmpIPredicate::eq, rIterArg, lastIterVal);
-            scf::IfOp ifb = rewriter.create<scf::IfOp>(
-                loc, isLastIter, /*withElseRegion=*/false);
-            {
-              OpBuilder thenb = ifb.getThenBodyBuilder();
-              thenb.create<InBoundsStoreOp>(
-                  loc, reduced, workspaceLDSBuffer,
-                  reductionLoop.getLowerCoords(/*domain=*/2));
-            }
+            OpBuilder thenb = ifb.getThenBodyBuilder();
+            /*rewriter.create<gpu::PrintfOp>(
+                loc, rewriter.getStringAttr("block: %d "
+                                   "tid: %d loadVal: %f\n"),
+                ValueRange{blockId, tid, loadVal});*/
+            thenb.create<InBoundsStoreOp>(
+                loc, loadVal, workspaceLDSBuffer,
+                reductionLoop.getLowerCoords(/*domain=*/0)); //2
           }
+        }
         }
         ArrayAttr reducedldsViewArrayAttr = createLDSWorkspaceView(
             loc, rewriter, inputViewArrayAttr, axis, /*makeRDimZero-*/ true,
@@ -1135,8 +1564,8 @@ struct BlockwiseReduceRewritePattern
             /*extraIndices=*/ValueRange{tid}, true, false);
         if (ArrayAttr outputViewArrayAttr = op.getExtraOutViewAttr()) {
           ArrayAttr reducedldsViewArrayAttr2 = createLDSWorkspaceView(
-              loc, rewriter, outputViewArrayAttr, axis, /*makeRDimZero-*/ true,
-              partialRegTensorShape[rDim]);
+              loc, rewriter, outputViewArrayAttr, axis,
+              /*makeRDimZero-*/ true, partialRegTensorShape[rDim]);
           rewriter.create<ThreadwiseReadIntoOp>(
               loc, workspaceLDSBuffer, op.getExtraOut(),
               reducedldsViewArrayAttr2,
@@ -1151,14 +1580,15 @@ struct BlockwiseReduceRewritePattern
             createLDSWorkspaceView(loc, rewriter, threadToTensorViewTrs, rDim);
         ArrayRef<int64_t> threadViewShape =
             cast<TransformMapAttr>(threadToLDSViewTrs[0]).getUpperBounds();
-        constexpr size_t rTidDim = 1;
+
+        constexpr size_t nrIterDim = 1;
         constexpr size_t rIterDim = 2;
 
+        // Note: This currently creates a bunch of dead IR because
+        // vectorization needs access to a `Value` in order to account for
+        // scalarized buffers.
         Value threadToLDSViewed =
             transform(rewriter, workspaceLDSBuffer, threadToLDSViewTrs);
-        VectorizationResult rIterVectorRes =
-            getMaxVectorization(threadToLDSViewed, rIterDim);
-        int64_t rIterVectorLen = rIterVectorRes.max;
         Value nrDimSizeProductConst = rewriter.create<arith::ConstantIndexOp>(
             loc, nonReductionDimSizeProduct);
         Value rtid =
@@ -1168,146 +1598,335 @@ struct BlockwiseReduceRewritePattern
 
         // We need to do the threadwise reduction
         // here only if rIterDim is meaninfully iterated
-        // otherwise this step can be skipped.
-        if (threadViewShape[rIterDim] > 1) {
-          // This is where thread_wise reduction result is stored.
-          Type loadTypeInputReg = vectorTypeOrSelf(elemType, rIterVectorLen);
-          Type accRegType = MemRefType::get({1}, elemType, AffineMap{},
-                                            privateMemoryAddressSpace);
-          Value accReg = rewriter.create<GpuAllocOp>(loc, accRegType);
-          // This RAII scope would create a loop to iteratively partialy reduce
-          // on a thread basis until items to reduce will match the available
-          // number of threads.
-          {
-            SmallVector<Value, 4> inits{nrtid, rtid, zeroConstantOp};
-            SmallVector<int64_t> bounds{1, 1, threadViewShape[rIterDim]};
-            SmallVector<int64_t> strides{1, 1, rIterVectorLen};
-
-            Value initVal = getReductionInitValue(op, rewriter);
-            rewriter.create<FillOp>(loc, accReg, initVal);
-
-            TransformingForOp reductionLoop =
-                rewriter.create<TransformingForOp>(
-                    loc, ArrayRef<ValueRange>(inits),
-                    ArrayRef<Attribute>{threadToLDSViewTrs},
-                    ArrayRef<int64_t>(bounds), ArrayRef<int64_t>(strides),
-                    /*forceUnroll=*/true, /*useIndexDiffs=*/true);
-            {
-              PatternRewriter::InsertionGuard guard(rewriter);
-              rewriter.setInsertionPointToStart(reductionLoop.getBody());
-              Block::BlockArgListType LDSLoadCoords =
-                  reductionLoop.getLowerCoords(/*domain=*/0);
-              Value loadVal = rewriter.create<InBoundsLoadOp>(
-                  loc, loadTypeInputReg, workspaceLDSBuffer, LDSLoadCoords);
-              Value loadAcc = rewriter.create<InBoundsLoadOp>(
-                  loc, elemType, accReg, zeroConstantOp);
-              Value reduced = createReducingOp(op, loadVal, loadAcc, rewriter);
-              rewriter.create<InBoundsStoreOp>(loc, reduced, accReg,
-                                               zeroConstantOp);
-            }
-          }
-
-          // This RAII scope would store the partial reductions to
-          // LDS
-          {
-            SmallVector<Value, 4> inits{nrtid, rtid, zeroConstantOp};
-            SmallVector<int64_t> bounds{1, 1, 1};
-            SmallVector<int64_t> strides{1, 1, 1};
-
-            TransformingForOp reductionLoop =
-                rewriter.create<TransformingForOp>(
-                    loc, ArrayRef<ValueRange>(inits),
-                    ArrayRef<Attribute>{threadToLDSViewTrs},
-                    ArrayRef<int64_t>(bounds), ArrayRef<int64_t>(strides),
-                    /*forceUnroll=*/true, /*useIndexDiffs=*/true);
-            {
-              PatternRewriter::InsertionGuard guard(rewriter);
-              rewriter.setInsertionPointToStart(reductionLoop.getBody());
-              Block::BlockArgListType LDSStoreCoords =
-                  reductionLoop.getLowerCoords(/*domain=*/0);
-              Value loadVal = rewriter.create<InBoundsLoadOp>(
-                  loc, elemType, accReg, zeroConstantOp);
-              rewriter.create<InBoundsStoreOp>(loc, loadVal, workspaceLDSBuffer,
-                                               LDSStoreCoords);
-            }
-            rewriter.create<LDSBarrierOp>(loc);
-          }
-        }
-
-        // This RAII scope would do the following :
-        // LDS[rtid] = reduce(LDS[rtid], LDS[rtid + offset])
-        // where offset is a power of 2.
-        // Initial it starts with power = ceil(|rtid|, power of 2) / 2
-        // Then keep on reducing the power.
+        // otherwise this step can be skipped.*/
+      /*if (threadViewShape[rIterDim] > 1) {
+        llvm::errs() << "Usao sam!!" << "\n";
+        Type accRegType = MemRefType::get({1}, elemType, AffineMap{},
+                                          privateMemoryAddressSpace);
+        Value accReg = rewriter.create<GpuAllocOp>(loc, accRegType);
         {
-          int64_t ceilPowerOf2 =
-              llvm::PowerOf2Ceil(threadViewShape[rTidDim]) / 2;
-          int64_t maxActiveReductionThreads = threadViewShape[rTidDim];
-          for (int64_t offset = ceilPowerOf2; offset >= 1;
-               offset = offset >> 1) {
-            Value offsetVal =
-                rewriter.create<arith::ConstantIndexOp>(loc, offset);
-            Value rtidPlusOffsetVal =
-                rewriter.create<arith::AddIOp>(loc, rtid, offsetVal);
-            Value maxActiveReductionThreadsVal =
-                rewriter.create<arith::ConstantIndexOp>(
-                    loc, maxActiveReductionThreads);
-            maxActiveReductionThreads =
-                llvm::PowerOf2Ceil(maxActiveReductionThreads) >> 1;
-            Value isValid = rewriter.create<arith::CmpIOp>(
-                loc, arith::CmpIPredicate::slt, rtidPlusOffsetVal,
-                maxActiveReductionThreadsVal);
-            scf::IfOp ifb = rewriter.create<scf::IfOp>(
-                loc, isValid, /*withElseRegion=*/false);
-            {
-              OpBuilder thenb = ifb.getThenBodyBuilder();
-              SmallVector<Value, 4> firstInits{nrtid, rtid, zeroConstantOp};
-              SmallVector<Value, 4> secondInits{nrtid, rtidPlusOffsetVal,
-                                                zeroConstantOp};
-              SmallVector<int64_t> bounds{1, 1, 1};
-              SmallVector<int64_t> strides{1, 1, 1};
+          SmallVector<Value, 4> inits{nrtid, rtid, zeroConstantOp};
+          SmallVector<int64_t> bounds{1, 1, threadViewShape[rIterDim]};
+          SmallVector<int64_t> strides{1, 1, 1};
 
-              TransformingForOp reductionLoop = thenb.create<TransformingForOp>(
-                  loc, ArrayRef<ValueRange>{firstInits, secondInits},
-                  ArrayRef<Attribute>{threadToLDSViewTrs, threadToLDSViewTrs},
+          //Value initVal = getReductionInitValue(op, rewriter);
+          //rewriter.create<FillOp>(loc, accReg, initVal);
+
+          TransformingForOp reductionLoop =
+              rewriter.create<TransformingForOp>(
+                  loc, ArrayRef<ValueRange>(inits),
+                  ArrayRef<Attribute>{threadToLDSViewTrs},
                   ArrayRef<int64_t>(bounds), ArrayRef<int64_t>(strides),
-                  /*forceUnroll=*/true, /*useIndexDiffs=*/true);
-              {
-                PatternRewriter::InsertionGuard guard(thenb);
-                thenb.setInsertionPointToStart(reductionLoop.getBody());
-                Block::BlockArgListType firstLDSLoadCoords =
-                    reductionLoop.getLowerCoords(/*domain=*/0);
-                Value firstLoadVal = thenb.create<InBoundsLoadOp>(
-                    loc, elemType, workspaceLDSBuffer, firstLDSLoadCoords);
-                Block::BlockArgListType secondLDSLoadCoords =
-                    reductionLoop.getLowerCoords(/*domain=*/1);
-                Value secondLoadVal = thenb.create<InBoundsLoadOp>(
-                    loc, elemType, workspaceLDSBuffer, secondLDSLoadCoords);
-                Value reduced =
-                    createReducingOp(op, firstLoadVal, secondLoadVal, thenb);
-                thenb.create<InBoundsStoreOp>(loc, reduced, workspaceLDSBuffer,
-                                              firstLDSLoadCoords);
-              }
-            }
-            rewriter.create<LDSBarrierOp>(loc);
+                  true, true);
+          {
+            PatternRewriter::InsertionGuard guard(rewriter);
+            rewriter.setInsertionPointToStart(reductionLoop.getBody());
+            Block::BlockArgListType LDSLoadCoords =
+                reductionLoop.getLowerCoords(0);
+            Value loadVal = rewriter.create<InBoundsLoadOp>(
+                loc, elemType, workspaceLDSBuffer, LDSLoadCoords);
+            rewriter.create<gpu::PrintfOp>(loc,
+                                           "Thread ID (rtid): %ld, "
+                                           "Loaded Value: %f\n",
+                                           ValueRange{rtid, loadVal});
+            rewriter.create<InBoundsStoreOp>(loc, loadVal, workspaceLDSBuffer,
+                                             zeroConstantOp);
           }
-          ArrayAttr reducedldsViewArrayAttr = createLDSWorkspaceView(
-              loc, rewriter, inputViewArrayAttr, axis, /*makeRDimZero-*/ true,
-              partialRegTensorShape[rDim]);
-          rewriter.create<ThreadwiseReadIntoOp>(
-              loc, workspaceLDSBuffer, outputReg, reducedldsViewArrayAttr,
-              /*extraIndices=*/ValueRange{tid}, true, false);
-          if (ArrayAttr outputViewArrayAttr = op.getExtraOutViewAttr()) {
-            ArrayAttr reducedldsViewArrayAttr2 = createLDSWorkspaceView(
-                loc, rewriter, outputViewArrayAttr, axis,
-                /*makeRDimZero-*/ true, partialRegTensorShape[rDim]);
-            rewriter.create<ThreadwiseReadIntoOp>(
-                loc, workspaceLDSBuffer, op.getExtraOut(),
-                reducedldsViewArrayAttr2,
-                /*extraIndices=*/ValueRange{tid}, true, false);
+          rewriter.create<LDSBarrierOp>(loc);
+        }
+      }*/
+
+      {
+        // Glavna logika redukcije na 256 vrednosti
+        SmallVector<Value, 4> inits{nrtid, rtid, zeroConstantOp};
+        SmallVector<int64_t> bounds{1, 1, threadViewShape[rIterDim]};
+        SmallVector<int64_t> strides{1, 1, 1}; // Ako je redukcija već urađena
+
+        TransformingForOp reductionLoop = rewriter.create<TransformingForOp>(
+            loc, ArrayRef<ValueRange>{inits, inits, inits},
+            ArrayRef<Attribute>{threadToLDSViewTrs, rewriter.getArrayAttr({}),
+                                threadsToLDSViewReducedTrs},
+            ArrayRef<int64_t>(bounds), ArrayRef<int64_t>(strides),
+            true, true);
+        {
+          PatternRewriter::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(reductionLoop.getBody());
+          Block::BlockArgListType LDSLoadCoords =
+              reductionLoop.getLowerCoords(0);
+          // There are two vectorization scenarios :
+          // 1) rIterVectorLen > 1 &&  nrIterVectorLen == 1
+          //    Here we will have a load vector and accReg that is a scalar
+          //    The code in createReducingOp will vector reduce it before
+          //    doing a reducing store to accReg
+          // 2) nrIterVectorLen > 1 && rIterVectorLen == 1
+          //    Here we will have a load vector and accReg that is also a
+          //    vector The code in createReducingOp will do vector
+          //    elementwise op and store the resulting vector to accReg.
+          // NOTE: currently, LDS is viewed as [nrDim x rDim] therefore
+          // only scenario 1) is exercised. However, we'd like to keep
+          // this code compatible with both approaches for future changes.
+          Value loadVal = rewriter.create<InBoundsLoadOp>(
+              loc, elemType, workspaceLDSBuffer, LDSLoadCoords);
+          rewriter.create<gpu::PrintfOp>(
+              loc,
+              rewriter.getStringAttr(
+                  "Rtid: %ld, Loaded value from workspaceLDSBuffer: %f\n"),
+              ValueRange{rtid, loadVal});
+          Value rIterArg =
+              reductionLoop.getLowerCoords(1)[rIterDim];
+          rewriter.create<gpu::PrintfOp>(
+              loc,
+              rewriter.getStringAttr("Current reduction iteration: %d\n"),
+              ArrayRef<Value>{rIterArg});
+
+          Value isLastIter = rewriter.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::eq, rIterArg,
+              rewriter.create<arith::ConstantIndexOp>(
+                  loc, threadViewShape[2] - 1));
+          scf::IfOp ifb = rewriter.create<scf::IfOp>(
+              loc, isLastIter, false);
+          {
+            OpBuilder thenb = ifb.getThenBodyBuilder();
+            thenb.create<InBoundsStoreOp>(
+                loc, loadVal, workspaceLDSBuffer,
+                reductionLoop.getLowerCoords(2));
           }
         }
       }
+      /*ArrayAttr reducedldsViewArrayAttr = createLDSWorkspaceView(
+          loc, rewriter, inputViewArrayAttr, axis,  true,
+          partialRegTensorShape[rDim]);
+      rewriter.create<LDSBarrierOp>(loc);
+      rewriter.create<ThreadwiseReadIntoOp>(
+          loc, workspaceLDSBuffer, outputReg, reducedldsViewArrayAttr,
+          ValueRange{tid}, true, false);
+      if (ArrayAttr outputViewArrayAttr = op.getExtraOutViewAttr()) {
+          llvm::errs() << "Usao sam!!" << "\n";
+        ArrayAttr reducedldsViewArrayAttr2 = createLDSWorkspaceView(
+            loc, rewriter, outputViewArrayAttr, axis,
+             true, partialRegTensorShape[rDim]);
+        rewriter.create<ThreadwiseReadIntoOp>(
+            loc, workspaceLDSBuffer, op.getExtraOut(),
+            reducedldsViewArrayAttr2,
+            ValueRange{tid}, true, false);
+      }
+    }*/
+      //}
+      // else {
+      //  This means there are more threads than elements to be reduced.
+      /*ArrayAttr threadToTensorViewTrs =
+          createThreadViewforNRSmallerThanThreads(loc, partialRegTensorShape,
+                                                  blockSize, rDim, rewriter);
+      ArrayAttr threadToLDSViewTrs =
+          createLDSWorkspaceView(loc, rewriter, threadToTensorViewTrs, rDim);
+      ArrayRef<int64_t> threadViewShape =
+          cast<TransformMapAttr>(threadToLDSViewTrs[0]).getUpperBounds();
+      SmallVector<Value, 4> dimValues;
+      for (int64_t dim : threadViewShape) {
+        dimValues.push_back(
+            rewriter.create<arith::ConstantIndexOp>(loc, dim));
+      }
+
+      // Kreiranje format stringa za PrintfOp
+      std::string formatStr = "Thread view shape: [";
+      for (size_t i = 0; i < threadViewShape.size(); ++i) {
+        formatStr += "%d ";
+      }
+      formatStr += "]\n";
+
+      // Ispisivanje threadViewShape koristeći gpu::PrintfOp
+      rewriter.create<gpu::PrintfOp>(loc, rewriter.getStringAttr(formatStr),
+                                     dimValues);
+      constexpr size_t rTidDim = 1;
+      constexpr size_t rIterDim = 2;
+
+      Value threadToLDSViewed =
+          transform(rewriter, workspaceLDSBuffer, threadToLDSViewTrs);
+      VectorizationResult rIterVectorRes =
+          getMaxVectorization(threadToLDSViewed, rIterDim);
+      int64_t rIterVectorLen = rIterVectorRes.max;
+      Value nrDimSizeProductConst = rewriter.create<arith::ConstantIndexOp>(
+          loc, nonReductionDimSizeProduct);
+      Value rtid =
+          rewriter.create<arith::DivSIOp>(loc, tid, nrDimSizeProductConst);
+      Value nrtid =
+          rewriter.create<arith::RemSIOp>(loc, tid, nrDimSizeProductConst);
+
+      // We need to do the threadwise reduction
+      // here only if rIterDim is meaninfully iterated
+      // otherwise this step can be skipped.
+      if (threadViewShape[rIterDim] > 1) {
+        // This is where thread_wise reduction result is stored.
+        Type loadTypeInputReg = vectorTypeOrSelf(elemType, rIterVectorLen);
+        Type accRegType = MemRefType::get({1}, elemType, AffineMap{},
+                                          privateMemoryAddressSpace);
+        Value accReg = rewriter.create<GpuAllocOp>(loc, accRegType);
+        // This RAII scope would create a loop to iteratively partialy
+        // reduce on a thread basis until items to reduce will match the
+        // available number of threads.
+        {
+          SmallVector<Value, 4> inits{nrtid, rtid, zeroConstantOp};
+          SmallVector<int64_t> bounds{1, 1, threadViewShape[rIterDim]};
+          SmallVector<int64_t> strides{1, 1, rIterVectorLen};
+
+          Value initVal = getReductionInitValue(op, rewriter);
+          rewriter.create<FillOp>(loc, accReg, initVal);
+
+          TransformingForOp reductionLoop =
+              rewriter.create<TransformingForOp>(
+                  loc, ArrayRef<ValueRange>(inits),
+                  ArrayRef<Attribute>{threadToLDSViewTrs},
+                  ArrayRef<int64_t>(bounds), ArrayRef<int64_t>(strides),*/
+      /*forceUnroll=*/ // true, /*useIndexDiffs=*/true);
+      /*{
+        PatternRewriter::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(reductionLoop.getBody());
+        Block::BlockArgListType LDSLoadCoords =
+            reductionLoop.getLowerCoords(*/
+      /*domain=*/ // 0);
+      /*Value loadVal = rewriter.create<InBoundsLoadOp>(
+          loc, loadTypeInputReg, workspaceLDSBuffer, LDSLoadCoords);
+      Value loadAcc = rewriter.create<InBoundsLoadOp>(
+          loc, elemType, accReg, zeroConstantOp);
+      Value reduced = createReducingOp(op, loadVal, loadAcc, rewriter);
+      // Print all relevant values in one line
+      rewriter.create<gpu::PrintfOp>(
+          loc,
+          "Thread ID (rtid): %ld, Accumulator before reduction: %f, "
+          "Reduced Value: %f\n",
+          ValueRange{rtid, loadAcc, reduced});
+      rewriter.create<InBoundsStoreOp>(loc, reduced, accReg,
+                                       zeroConstantOp);
+    }
+  }
+
+  // This RAII scope would store the partial reductions to
+  // LDS
+  {
+    SmallVector<Value, 4> inits{nrtid, rtid, zeroConstantOp};
+    SmallVector<int64_t> bounds{1, 1, 1};
+    SmallVector<int64_t> strides{1, 1, 1};
+
+    TransformingForOp reductionLoop =
+        rewriter.create<TransformingForOp>(
+            loc, ArrayRef<ValueRange>(inits),
+            ArrayRef<Attribute>{threadToLDSViewTrs},
+            ArrayRef<int64_t>(bounds), ArrayRef<int64_t>(strides),*/
+      /*forceUnroll=*/ // true, /*useIndexDiffs=*/true);
+      /*{
+        PatternRewriter::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(reductionLoop.getBody());
+        Block::BlockArgListType LDSStoreCoords =
+            reductionLoop.getLowerCoords(*/
+      /*domain=*/ // 0);
+      /*Value loadVal = rewriter.create<InBoundsLoadOp>(
+           loc, elemType, accReg, zeroConstantOp);
+       rewriter.create<InBoundsStoreOp>(loc, loadVal, workspaceLDSBuffer,
+                                        LDSStoreCoords);
+     }
+     rewriter.create<LDSBarrierOp>(loc);
+   }
+  }
+
+  // This RAII scope would do the following :
+  // LDS[rtid] = reduce(LDS[rtid], LDS[rtid + offset])
+  // where offset is a power of 2.
+  // Initial it starts with power = ceil(|rtid|, power of 2) / 2
+  // Then keep on reducing the power.
+  {
+   int64_t ceilPowerOf2 =
+       llvm::PowerOf2Ceil(threadViewShape[rTidDim]) / 2;
+   auto ceilPowerOf2MLIR =
+       rewriter.create<arith::ConstantIndexOp>(loc, ceilPowerOf2);
+   rewriter.create<mlir::gpu::PrintfOp>(loc, "ceilPowerOf2: %d\n",
+                                        ValueRange{ceilPowerOf2MLIR});
+   int64_t maxActiveReductionThreads = threadViewShape[rTidDim];
+   auto cmaxActiveReductionThreadsMLIR =
+       rewriter.create<arith::ConstantIndexOp>(
+           loc, maxActiveReductionThreads);
+   rewriter.create<mlir::gpu::PrintfOp>(
+       loc, "maxActiveReductionThreads: %d\n",
+       ValueRange{cmaxActiveReductionThreadsMLIR});
+
+   for (int64_t offset = ceilPowerOf2; offset >= 1;
+        offset = offset >> 1) {
+     Value offsetVal =
+         rewriter.create<arith::ConstantIndexOp>(loc, offset);
+     Value rtidPlusOffsetVal =
+         rewriter.create<arith::AddIOp>(loc, rtid, offsetVal);
+     Value maxActiveReductionThreadsVal =
+         rewriter.create<arith::ConstantIndexOp>(
+             loc, maxActiveReductionThreads);
+     rewriter.create<mlir::gpu::PrintfOp>(
+         loc,
+         "offsetVal:  %d\n, rtidPlusOffsetVal: %d\n, "
+         "maxActiveReductionThreadsVal: %d\n",
+         ValueRange{offsetVal, rtidPlusOffsetVal,
+                    maxActiveReductionThreadsVal});
+     maxActiveReductionThreads =
+         llvm::PowerOf2Ceil(maxActiveReductionThreads) >> 1;
+     Value isValid = rewriter.create<arith::CmpIOp>(
+         loc, arith::CmpIPredicate::slt, rtidPlusOffsetVal,
+         maxActiveReductionThreadsVal);
+     scf::IfOp ifb = rewriter.create<scf::IfOp>(
+         loc, isValid, */
+      /*withElseRegion=*/ // false);
+      /*{
+        OpBuilder thenb = ifb.getThenBodyBuilder();
+        SmallVector<Value, 4> firstInits{nrtid, rtid, zeroConstantOp};
+        SmallVector<Value, 4> secondInits{nrtid, rtidPlusOffsetVal,
+                                          zeroConstantOp};
+        SmallVector<int64_t> bounds{1, 1, 1};
+        SmallVector<int64_t> strides{1, 1, 1};
+
+        TransformingForOp reductionLoop = thenb.create<TransformingForOp>(
+            loc, ArrayRef<ValueRange>{firstInits, secondInits},
+            ArrayRef<Attribute>{threadToLDSViewTrs, threadToLDSViewTrs},
+            ArrayRef<int64_t>(bounds), ArrayRef<int64_t>(strides),*/
+      /*forceUnroll=*/ // true, /*useIndexDiffs=*/true);
+      /*{
+        PatternRewriter::InsertionGuard guard(thenb);
+        thenb.setInsertionPointToStart(reductionLoop.getBody());
+        Block::BlockArgListType firstLDSLoadCoords =
+            reductionLoop.getLowerCoords(0);
+        Value firstLoadVal = thenb.create<InBoundsLoadOp>(
+            loc, elemType, workspaceLDSBuffer, firstLDSLoadCoords);
+        Block::BlockArgListType secondLDSLoadCoords =
+            reductionLoop.getLowerCoords(1);
+        Value secondLoadVal = thenb.create<InBoundsLoadOp>(
+            loc, elemType, workspaceLDSBuffer, secondLDSLoadCoords);
+        Value reduced =
+            createReducingOp(op, firstLoadVal, secondLoadVal, thenb);
+        thenb.create<mlir::gpu::PrintfOp>(
+            loc,
+            "Thread ID: %d\n, rtid: %d\n,  First Load Value: %f\n, "
+            "Second Load Value: %f\n, Reduced Value: %f\n",
+            ValueRange{tid, rtid, firstLoadVal, secondLoadVal,
+                       reduced});
+        thenb.create<InBoundsStoreOp>(loc, reduced, workspaceLDSBuffer,
+                                      firstLDSLoadCoords);
+      }
+    }
+    rewriter.create<LDSBarrierOp>(loc);
+  }
+  ArrayAttr reducedldsViewArrayAttr = createLDSWorkspaceView(
+      loc, rewriter, inputViewArrayAttr, axis, */
+      /*makeRDimZero-*/ // true,
+                        /**partialRegTensorShape[rDim]);
+                     rewriter.create<ThreadwiseReadIntoOp>(
+                         loc, workspaceLDSBuffer, outputReg, reducedldsViewArrayAttr,*/
+      /*extraIndices=*/ // ValueRange{tid}, true, false);
+      /*if (ArrayAttr outputViewArrayAttr = op.getExtraOutViewAttr()) {
+        ArrayAttr reducedldsViewArrayAttr2 = createLDSWorkspaceView(
+            loc, rewriter, outputViewArrayAttr, axis,*/
+      /*makeRDimZero-*/ // true, partialRegTensorShape[rDim]);
+                        /*rewriter.create<ThreadwiseReadIntoOp>(
+                             loc, workspaceLDSBuffer, op.getExtraOut(),
+                             reducedldsViewArrayAttr2,*/
+      /*extraIndices=*/ // ValueRange{tid}, true, false);
+      /*}
+    }
+  }*/
       rewriter.eraseOp(op);
       return success();
     }
@@ -1318,10 +1937,12 @@ void RockLowerBlockwiseGemmToThreadwisePass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   {
     ConversionTarget writeAllTarget(*ctx);
+    
     writeAllTarget.addIllegalOp<BlockwiseBroadcastReduceOp, BlockwiseFillOp>();
     writeAllTarget.addLegalDialect<arith::ArithDialect, rock::RockDialect,
                                    memref::MemRefDialect, scf::SCFDialect,
-                                   vector::VectorDialect, AffineDialect>();
+                                   vector::VectorDialect, AffineDialect,
+                                   ROCDL::ROCDLDialect, amdgpu::AMDGPUDialect>();
     writeAllTarget.addLegalOp<gpu::PrintfOp>();
     RewritePatternSet writeAllPatterns(ctx);
     writeAllPatterns
@@ -1335,7 +1956,8 @@ void RockLowerBlockwiseGemmToThreadwisePass::runOnOperation() {
   target.addIllegalOp<FillOp, BlockwiseGemmOp, BlockwiseGemmAccelOp>();
   target.addLegalDialect<arith::ArithDialect, rock::RockDialect,
                          affine::AffineDialect, vector::VectorDialect,
-                         memref::MemRefDialect>();
+                         memref::MemRefDialect, ROCDL::ROCDLDialect,
+                         amdgpu::AMDGPUDialect>();
   target.addLegalOp<gpu::PrintfOp>();
 
   RewritePatternSet patterns(ctx);
